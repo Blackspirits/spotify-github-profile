@@ -306,11 +306,13 @@ def _set_playback_type(item, playback_type):
     return item
 
 
-def _get_latest_recent_track(access_token):
-    """Return the most recently played track using Spotify's played_at timestamp."""
+def _get_recent_track(access_token, recent_mode="random"):
+    """Return a recent track using the requested backwards-compatible strategy."""
     recent_plays = spotify.get_recently_play(access_token)
-    recent_items = recent_plays.get("items") or []
+    if not isinstance(recent_plays, dict):
+        return None
 
+    recent_items = recent_plays.get("items") or []
     valid_items = [
         play
         for play in recent_items
@@ -319,11 +321,16 @@ def _get_latest_recent_track(access_token):
     if not valid_items:
         return None
 
-    latest_play = max(valid_items, key=lambda play: play.get("played_at") or "")
-    return _set_playback_type(latest_play["track"], "track")
+    if recent_mode == "latest":
+        selected_play = max(valid_items, key=lambda play: play.get("played_at") or "")
+    else:
+        # Random selection is the project's historical default behavior.
+        selected_play = random.choice(valid_items)
+
+    return _set_playback_type(selected_play["track"], "track")
 
 
-def get_song_info(uid, show_offline):
+def get_song_info(uid, show_offline, recent_mode="random"):
     access_token = get_access_token(uid)
 
     item = None
@@ -336,32 +343,38 @@ def get_song_info(uid, show_offline):
         raise spotify.InvalidTokenError("Invalid Spotify access_token or refresh_token")
 
     data = spotify.get_now_playing(access_token)
-    current_item = data.get("item") if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        data = {}
+
+    current_item = data.get("item")
     current_type = (
-        data.get("currently_playing_type", current_item.get("type", "track"))
-        if isinstance(current_item, dict)
-        else "track"
+        data.get("currently_playing_type")
+        or (current_item.get("type") if isinstance(current_item, dict) else None)
+        or "track"
     )
 
-    if current_item and data.get("is_playing") is True:
+    # Spotify documents is_playing on successful responses. Falling back to the
+    # presence of an item keeps compatibility with legacy/malformed payloads.
+    playback_active = data.get("is_playing")
+    if playback_active is None:
+        playback_active = bool(current_item)
+
+    if current_item and playback_active is True:
         item = _set_playback_type(current_item, current_type)
         is_now_playing = True
         progress_ms = data.get("progress_ms")
-        if item.get("duration_ms"):
-            duration_ms = item["duration_ms"]
     elif show_offline:
         return None, False, None, None
     elif current_item:
         # A paused item is the most recent content the user was actually hearing.
         item = _set_playback_type(current_item, current_type)
-        if item.get("duration_ms"):
-            duration_ms = item["duration_ms"]
     else:
-        item = _get_latest_recent_track(access_token)
+        item = _get_recent_track(access_token, recent_mode)
         if item is None:
             return None, False, None, None
-        if item.get("duration_ms"):
-            duration_ms = item["duration_ms"]
+
+    if item.get("duration_ms"):
+        duration_ms = item["duration_ms"]
 
     return item, is_now_playing, progress_ms, duration_ms
 
@@ -379,6 +392,9 @@ def catch_all(path):
         request.args.get("bar_color_cover", default="false") == "true"
     )
     show_offline = request.args.get("show_offline", default="false") == "true"
+    recent_mode = request.args.get("recent_mode", default="random")
+    if recent_mode not in {"random", "latest"}:
+        recent_mode = "random"
     interchange = request.args.get("interchange", default="false") == "true"
     mode = request.args.get("mode", default="light")
     border_radius = request.args.get("border_radius", default="10")
@@ -394,7 +410,7 @@ def catch_all(path):
 
     try:
         item, is_now_playing, progress_ms, duration_ms = get_song_info(
-            uid, show_offline
+            uid, show_offline, recent_mode
         )
     except spotify.InvalidTokenError as e:
 
