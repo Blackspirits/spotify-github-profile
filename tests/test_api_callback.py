@@ -235,13 +235,30 @@ class TestRealCallbackIntegration:
         response = real_app_client.get("/?code=test_code&state=wrong_state")
         assert response.status_code == 400
         assert response.data == b"Invalid OAuth state"
+
+    @patch('util.spotify.generate_token')
+    def test_integration_callback_handles_access_denied(self, mock_generate_token, real_app_client):
+        """A denied authorization should end the state-bound flow without token exchange."""
+        real_app_client.set_cookie("spotify_oauth_state", "test_state")
+
+        response = real_app_client.get(
+            "/?error=access_denied&state=test_state"
+        )
+
+        assert response.status_code == 400
+        assert response.data == b"Spotify authorization failed: access_denied"
+        assert "spotify_oauth_state=;" in response.headers.get("Set-Cookie", "")
+        mock_generate_token.assert_not_called()
     
     def test_integration_callback_without_code(self, real_app_client):
-        """Test integration callback without authorization code."""
-        response = real_app_client.get("/")
+        """A valid state without a code or OAuth error should fail clearly."""
+        real_app_client.set_cookie("spotify_oauth_state", "test_state")
+
+        response = real_app_client.get("/?state=test_state")
         
-        assert response.status_code == 200
-        assert response.data == b"not ok"
+        assert response.status_code == 400
+        assert response.data == b"Missing authorization code"
+        assert "spotify_oauth_state=;" in response.headers.get("Set-Cookie", "")
     
     @patch('util.spotify.generate_token')
     def test_integration_spotify_error_handling(self, mock_generate_token, real_app_client):
