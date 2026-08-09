@@ -33,6 +33,12 @@ class InvalidTokenError(Exception):
     pass
 
 
+class TokenRefreshError(Exception):
+    """Raised when a refresh fails without proving the refresh token is invalid."""
+
+    pass
+
+
 def normalize_token_info(token_info, existing_refresh_token=None, now=None):
     """Normalize Spotify token metadata before persisting or caching it.
 
