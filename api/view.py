@@ -296,6 +296,33 @@ def get_access_token(uid):
     return access_token
 
 
+def _set_playback_type(item, playback_type):
+    """Return a copy of a Spotify item annotated for the renderer."""
+    if not isinstance(item, dict):
+        return None
+
+    item = item.copy()
+    item["currently_playing_type"] = playback_type
+    return item
+
+
+def _get_latest_recent_track(access_token):
+    """Return the most recently played track using Spotify's played_at timestamp."""
+    recent_plays = spotify.get_recently_play(access_token)
+    recent_items = recent_plays.get("items") or []
+
+    valid_items = [
+        play
+        for play in recent_items
+        if isinstance(play, dict) and isinstance(play.get("track"), dict)
+    ]
+    if not valid_items:
+        return None
+
+    latest_play = max(valid_items, key=lambda play: play.get("played_at") or "")
+    return _set_playback_type(latest_play["track"], "track")
+
+
 def get_song_info(uid, show_offline):
     access_token = get_access_token(uid)
 
@@ -304,37 +331,36 @@ def get_song_info(uid, show_offline):
     progress_ms = None
     duration_ms = None
 
-    # Handle refrest_token revoke or invalid token
+    # Handle refresh_token revoke or invalid token
     if access_token is None:
         raise spotify.InvalidTokenError("Invalid Spotify access_token or refresh_token")
 
     data = spotify.get_now_playing(access_token)
+    current_item = data.get("item") if isinstance(data, dict) else None
+    current_type = (
+        data.get("currently_playing_type", current_item.get("type", "track"))
+        if isinstance(current_item, dict)
+        else "track"
+    )
 
-    if data:
-        item = data["item"]
-        item["currently_playing_type"] = data["currently_playing_type"]
+    if current_item and data.get("is_playing") is True:
+        item = _set_playback_type(current_item, current_type)
         is_now_playing = True
-
-        # Extract progress data for currently playing tracks
         progress_ms = data.get("progress_ms")
-        if item and item.get("duration_ms"):
+        if item.get("duration_ms"):
             duration_ms = item["duration_ms"]
     elif show_offline:
         return None, False, None, None
+    elif current_item:
+        # A paused item is the most recent content the user was actually hearing.
+        item = _set_playback_type(current_item, current_type)
+        if item.get("duration_ms"):
+            duration_ms = item["duration_ms"]
     else:
-        recent_plays = spotify.get_recently_play(access_token)
-        size_recent_play = len(recent_plays["items"])
-
-        # Handle empty recently play, should offline
-        if size_recent_play == 0:
+        item = _get_latest_recent_track(access_token)
+        if item is None:
             return None, False, None, None
-
-        idx = random.randint(0, size_recent_play - 1)
-        item = recent_plays["items"][idx]["track"]
-        item["currently_playing_type"] = "track"
-        is_now_playing = False
-        # No progress data for recently played tracks, but get duration
-        if item and item.get("duration_ms"):
+        if item.get("duration_ms"):
             duration_ms = item["duration_ms"]
 
     return item, is_now_playing, progress_ms, duration_ms
