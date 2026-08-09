@@ -254,46 +254,50 @@ def get_access_token(uid):
             print("not exist data in firebase: {}".format(uid))
             return None
 
-        token_info = doc.to_dict()
-
+        token_info = doc.to_dict() or {}
         CACHE_TOKEN_INFO[uid] = token_info
 
     current_ts = int(time())
-    access_token = token_info.get("access_token", None)
-    print(access_token)
-
-    # Check token expired
+    access_token = token_info.get("access_token")
     expired_ts = token_info.get("expired_ts")
-    if expired_ts is None or current_ts >= expired_ts:
-        # Refresh token
-        refresh_token = token_info["refresh_token"]
 
-        new_token = spotify.refresh_token(refresh_token)
+    # Reuse a valid access token without exposing it in application logs.
+    if access_token and expired_ts is not None and current_ts < expired_ts:
+        return access_token
 
-        # Handle refresh token revoke
-        if new_token.get("error") == "invalid_grant":
-            # Delete token in firebase
-            doc_ref = db.collection("users").document(uid)
-            doc_ref.delete()
+    refresh_token_value = token_info.get("refresh_token")
+    if not refresh_token_value:
+        return None
 
-            # Delete token in memory cache
-            delete_cache_token_info(uid)
-            return None
+    new_token = spotify.refresh_token(refresh_token_value)
 
-        expired_ts = int(time()) + new_token["expires_in"]
-        update_data = {
-            "access_token": new_token["access_token"],
-            "expired_ts": expired_ts,
-        }
+    # A revoked refresh token requires a fresh authorization flow.
+    if new_token.get("error") == "invalid_grant":
         doc_ref = db.collection("users").document(uid)
-        doc_ref.update(update_data)
+        doc_ref.delete()
+        delete_cache_token_info(uid)
+        return None
 
-        access_token = new_token["access_token"]
+    if "access_token" not in new_token or "expires_in" not in new_token:
+        return None
 
-        # Save in memory cache
-        CACHE_TOKEN_INFO[uid] = update_data
+    refreshed_token_info = spotify.normalize_token_info(
+        new_token,
+        existing_refresh_token=refresh_token_value,
+        now=current_ts,
+    )
+    update_data = {
+        key: refreshed_token_info[key]
+        for key in ("access_token", "refresh_token", "expires_in", "expired_ts")
+        if key in refreshed_token_info
+    }
 
-    return access_token
+    doc_ref = db.collection("users").document(uid)
+    doc_ref.update(update_data)
+
+    merged_token_info = {**token_info, **update_data}
+    CACHE_TOKEN_INFO[uid] = merged_token_info
+    return merged_token_info["access_token"]
 
 
 def get_song_info(uid, show_offline):
