@@ -70,13 +70,16 @@ You can customize the appearance by adding query parameters to your URL:
 | `bar_color_cover` | Extract bar color from album cover (`true`/`false`) | `false` |
 | `cover_image` | Show album cover image (`true`/`false`) | `true` |
 | `show_offline` | Show offline status when not playing (`true`/`false`) | `false` |
+| `recent_mode` | Recent-track fallback when not playing (`random`/`latest`) | `random` |
 | `interchange` | Swap artist and song name positions (`true`/`false`) | `false` |
 | `mode` | Color mode for supported themes (`light`/`dark`) | `light` |
+
+`recent_mode=latest` shows the track with the newest Spotify `played_at` timestamp when there is no current item. A paused current track or episode is shown as `Recently played` instead of `Now playing`. Spotify's recently played endpoint currently returns tracks only, so podcast episodes can only be used for this fallback while they are still available as the current paused item.
 
 ### Example
 
 ```
-https://spotify-github-profile.kittinanx.com/api/view?uid=YOUR_UID&cover_image=true&theme=default&border_radius=15&bar_color=53b14f
+https://spotify-github-profile.kittinanx.com/api/view?uid=YOUR_UID&cover_image=true&theme=default&border_radius=15&bar_color=53b14f&recent_mode=latest
 ```
 
 ## Running for development locally without Vercel
