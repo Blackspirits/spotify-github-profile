@@ -269,23 +269,44 @@ def get_access_token(uid):
     if not refresh_token_value:
         return None
 
-    new_token = spotify.refresh_token(refresh_token_value)
+    try:
+        new_token = spotify.refresh_token(refresh_token_value)
+    except requests.exceptions.RequestException as exc:
+        raise spotify.TokenRefreshError(
+            "Spotify token refresh request failed"
+        ) from exc
+
+    refresh_error = new_token.get("error")
 
     # A revoked refresh token requires a fresh authorization flow.
-    if new_token.get("error") == "invalid_grant":
+    if refresh_error == "invalid_grant":
         doc_ref = db.collection("users").document(uid)
         doc_ref.delete()
         delete_cache_token_info(uid)
         return None
 
-    if "access_token" not in new_token or "expires_in" not in new_token:
-        return None
+    # Other errors are not proof that the stored refresh token is invalid.
+    if refresh_error:
+        raise spotify.TokenRefreshError(
+            f"Spotify token refresh failed: {refresh_error}"
+        )
 
-    refreshed_token_info = spotify.normalize_token_info(
-        new_token,
-        existing_refresh_token=refresh_token_value,
-        now=current_ts,
-    )
+    if "access_token" not in new_token or "expires_in" not in new_token:
+        raise spotify.TokenRefreshError(
+            "Spotify token refresh returned incomplete token metadata"
+        )
+
+    try:
+        refreshed_token_info = spotify.normalize_token_info(
+            new_token,
+            existing_refresh_token=refresh_token_value,
+            now=current_ts,
+        )
+    except ValueError as exc:
+        raise spotify.TokenRefreshError(
+            "Spotify token refresh returned invalid token metadata"
+        ) from exc
+
     update_data = {
         key: refreshed_token_info[key]
         for key in ("access_token", "refresh_token", "expires_in", "expired_ts")
@@ -308,7 +329,7 @@ def get_song_info(uid, show_offline):
     progress_ms = None
     duration_ms = None
 
-    # Handle refrest_token revoke or invalid token
+    # Handle refresh_token revoke or invalid token
     if access_token is None:
         raise spotify.InvalidTokenError("Invalid Spotify access_token or refresh_token")
 
@@ -374,11 +395,16 @@ def catch_all(path):
         item, is_now_playing, progress_ms, duration_ms = get_song_info(
             uid, show_offline
         )
-    except spotify.InvalidTokenError as e:
-
-        # Handle invalid token
+    except spotify.InvalidTokenError:
+        # Handle invalid or revoked credentials.
         return Response(
             "Error: Invalid Spotify access_token or refresh_token. Possibly the token revoked. Please re-login at https://github.com/kittinan/spotify-github-profile"
+        )
+    except spotify.TokenRefreshError:
+        # A temporary refresh failure must not be presented as revoked credentials.
+        return Response(
+            "Error: Spotify token refresh temporarily unavailable. Please try again later.",
+            status=502,
         )
 
     if (show_offline and not is_now_playing) or (item is None):
