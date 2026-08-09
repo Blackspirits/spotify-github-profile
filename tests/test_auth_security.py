@@ -159,6 +159,79 @@ def test_refresh_persists_rotated_refresh_token():
     assert view.CACHE_TOKEN_INFO['test_uid']['refresh_token'] == 'rotated_refresh_token'
 
 
+def test_transient_refresh_error_does_not_delete_credentials():
+    """Only invalid_grant should invalidate persisted Spotify credentials."""
+    view = _load_view_module()
+    view.CACHE_TOKEN_INFO.clear()
+
+    database, document = _mock_token_document({
+        'access_token': 'expired_access_token',
+        'refresh_token': 'existing_refresh_token',
+        'expires_in': 3600,
+        'expired_ts': 900,
+    })
+
+    with patch.object(view, 'db', database), \
+         patch.object(view, 'time', return_value=1000), \
+         patch.object(
+             view.spotify,
+             'refresh_token',
+             return_value={
+                 'error': 'temporarily_unavailable',
+                 'error_description': 'Please retry later',
+             },
+         ):
+        with pytest.raises(view.spotify.TokenRefreshError, match='temporarily_unavailable'):
+            view.get_access_token('test_uid')
+
+    document.delete.assert_not_called()
+    document.update.assert_not_called()
+    assert view.CACHE_TOKEN_INFO['test_uid']['refresh_token'] == 'existing_refresh_token'
+
+
+def test_malformed_refresh_response_does_not_invalidate_credentials():
+    """Incomplete refresh metadata is a service failure, not revoked authorization."""
+    view = _load_view_module()
+    view.CACHE_TOKEN_INFO.clear()
+
+    database, document = _mock_token_document({
+        'access_token': 'expired_access_token',
+        'refresh_token': 'existing_refresh_token',
+        'expires_in': 3600,
+        'expired_ts': 900,
+    })
+
+    with patch.object(view, 'db', database), \
+         patch.object(view, 'time', return_value=1000), \
+         patch.object(
+             view.spotify,
+             'refresh_token',
+             return_value={'expires_in': 3600},
+         ):
+        with pytest.raises(view.spotify.TokenRefreshError, match='incomplete'):
+            view.get_access_token('test_uid')
+
+    document.delete.assert_not_called()
+    document.update.assert_not_called()
+
+
+def test_view_reports_transient_refresh_failure_without_reauth_message():
+    """Temporary refresh failures should return a retryable server error."""
+    view = _load_view_module()
+
+    with patch.object(
+        view,
+        'get_song_info',
+        side_effect=view.spotify.TokenRefreshError('temporary failure'),
+    ):
+        with view.app.test_client() as client:
+            response = client.get('/?uid=test_user')
+
+    assert response.status_code == 502
+    assert b'temporarily unavailable' in response.data
+    assert b'Please re-login' not in response.data
+
+
 def test_normalize_token_info_rejects_invalid_expiry():
     """Invalid token metadata should fail clearly instead of poisoning the cache."""
     from util import spotify
